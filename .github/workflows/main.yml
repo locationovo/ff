@@ -1,0 +1,44 @@
+name: Build ff for iOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-14
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+      SDKROOT: /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装Rust工具链
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: 交叉编译目标
+        run: rustup target add aarch64-apple-ios
+
+      - name: cargo配置
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [target.aarch64-apple-ios]
+          EOF
+
+      - name: 构建
+        run: cargo build --release --target aarch64-apple-ios
+
+      - name: 剥离调试符号
+        run: strip target/aarch64-apple-ios/release/ff
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ff-ios-arm64
+          path: target/aarch64-apple-ios/release/ff
+          retention-days: 30

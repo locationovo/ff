@@ -1,0 +1,103 @@
+name: Build deb
+
+on:
+  workflow_dispatch:
+
+env:
+  IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+  BUNDLE_ID: com.unknown.ff
+  PACKAGE_NAME: ff
+  MAINTAINER: unknown
+
+jobs:
+  build-deb:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 获取版本号
+        id: get_version
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.1.8-dev.$(git rev-parse --short HEAD)")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "版本: $VERSION"
+
+      - name: 配置SDK路径
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          echo "SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
+
+      - name: 安装Rust工具链
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: 交叉编译目标
+        run: rustup target add aarch64-apple-ios
+
+      - name: 构建ff
+        run: cargo build --release --target aarch64-apple-ios
+
+      - name: 剥离调试符号
+        run: strip target/aarch64-apple-ios/release/ff
+
+      - name: 安装依赖
+        run: brew install ldid dpkg
+
+      - name: 准备deb结构
+        run: |
+          mkdir -p deb/DEBIAN
+          mkdir -p deb/usr/local/bin
+          cp target/aarch64-apple-ios/release/ff deb/usr/local/bin/ff
+          cat > deb/entitlements.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>platform-application</key>
+              <true/>
+              <key>com.apple.security.get-task-allow</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+      - name: ldid签名
+        run: ldid -Sdeb/entitlements.plist deb/usr/local/bin/ff
+
+      - name: 创建control
+        run: |
+          cat > deb/DEBIAN/control << EOF
+          Package: ${{ env.BUNDLE_ID }}
+          Name: ${{ env.PACKAGE_NAME }}
+          Version: ${{ steps.get_version.outputs.version }}
+          Section: utils
+          Priority: optional
+          Architecture: iphoneos-arm
+          Maintainer: ${{ env.MAINTAINER }}
+          Description: Find Files (ff) utility recursively searches the files whose names match the specified RegExp pattern in the provided directory (defaults to the current directory if not provided).
+          EOF
+
+      - name: 创建postinst
+        run: |
+          cat > deb/DEBIAN/postinst << 'EOF'
+          #!/bin/bash
+          chmod 755 /usr/local/bin/ff
+          echo "ff installed to /usr/local/bin/ff"
+          EOF
+          chmod 755 deb/DEBIAN/postinst
+
+      - name: 构建deb
+        run: dpkg-deb --build deb ${{ env.BUNDLE_ID }}_${{ steps.get_version.outputs.version }}_iphoneos-arm.deb
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ff-ios-deb-${{ steps.get_version.outputs.version }}
+          path: ${{ env.BUNDLE_ID }}_${{ steps.get_version.outputs.version }}_iphoneos-arm.deb
+          retention-days: 30
